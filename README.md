@@ -155,3 +155,6 @@ Appends to the end of the window's playlist.
   rather than the backend capping the duration artificially.
 - **No authentication.** Not required by the brief; all endpoints are
   public.
+
+
+  Frontend repo (React): https://github.com/AshishXoTech/media-sequencer-frontend
