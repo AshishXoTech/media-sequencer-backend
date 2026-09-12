@@ -52,7 +52,7 @@ func (a *API) ListWindows(w http.ResponseWriter, r *http.Request) {
 func (a *API) NowPlaying(w http.ResponseWriter, r *http.Request) {
 	windowID := r.PathValue("id")
 
-	if _, err := a.store.GetWindow(windowID); err != nil {
+	if _, err := a.getWindowWithRetry(windowID); err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
 			respondError(w, http.StatusNotFound, "window not found")
 			return
@@ -61,13 +61,13 @@ func (a *API) NowPlaying(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	entries, err := a.store.PlaylistForWindow(windowID)
+	entries, err := a.getPlaylistWithRetry(windowID)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
-	sync, err := a.store.GetSyncState()
+	sync, err := a.getSyncStateWithRetry()
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "internal server error")
 		return
@@ -79,6 +79,44 @@ func (a *API) NowPlaying(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respondJSON(w, http.StatusOK, result)
+}
+
+// The three helpers below wrap the read path that NowPlaying depends
+// on with a single retry after a short pause. Free-tier Postgres
+// providers (Neon included) suspend their compute when idle; the
+// FIRST query after a period of inactivity can transiently fail
+// while the pooler re-establishes a connection to the woken-up
+// database, even though the very next query (milliseconds later)
+// succeeds. Since this endpoint is polled every ~2s by the frontend,
+// one retry turns a rare, real infrastructure blip into a
+// non-event for the user instead of a visible error flash — without
+// masking a GENUINE, persistent failure, which will still surface
+// as an error after the retry also fails.
+func (a *API) getWindowWithRetry(id string) (*models.Window, error) {
+	w, err := a.store.GetWindow(id)
+	if err == nil || errors.Is(err, repository.ErrNotFound) {
+		return w, err
+	}
+	time.Sleep(300 * time.Millisecond)
+	return a.store.GetWindow(id)
+}
+
+func (a *API) getPlaylistWithRetry(windowID string) ([]*models.PlaylistEntry, error) {
+	entries, err := a.store.PlaylistForWindow(windowID)
+	if err == nil {
+		return entries, nil
+	}
+	time.Sleep(300 * time.Millisecond)
+	return a.store.PlaylistForWindow(windowID)
+}
+
+func (a *API) getSyncStateWithRetry() (*models.SyncState, error) {
+	sync, err := a.store.GetSyncState()
+	if err == nil {
+		return sync, nil
+	}
+	time.Sleep(300 * time.Millisecond)
+	return a.store.GetSyncState()
 }
 
 func (a *API) ListMedia(w http.ResponseWriter, r *http.Request) {
